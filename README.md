@@ -98,7 +98,7 @@ python -m evaluate --split train --limit 8 --output artifacts/train_results.xlsx
 
 ## LangSmith — необязательная часть
 
-[Эксперимент `rag-de3991d1` в LangSmith](https://smith.langchain.com/o/79fae55b-f51c-449b-aacd-f85d42c1826a/datasets/c848887b-e4c7-46dd-ad95-71cb4f7d0b7f/compare?selectedSessions=dcdfc3dd-fa54-4019-a0f4-92d875c69c40) содержит трассы RAG и оценки для всех 141 вопросов test. Для просмотра ссылки нужен доступ к рабочему пространству LangSmith.
+[Эксперимент `rag-de3991d1` в LangSmith]([https://smith.langchain.com/o/79fae55b-f51c-449b-aacd-f85d42c1826a/datasets/c848887b-e4c7-46dd-ad95-71cb4f7d0b7f/compare?selectedSessions=dcdfc3dd-fa54-4019-a0f4-92d875c69c40](https://smith.langchain.com/public/94c16c9e-8fb2-4b67-9556-e43128aa1d5d/d)) содержит трассы RAG и оценки для всех 141 вопросов test. Для просмотра ссылки нужен доступ к рабочему пространству LangSmith.
 
 Для повторения задайте `LANGSMITH_API_KEY` в `.env` и запустите `python run_inference.py --repeat --langsmith`. Команда устанавливает SDK, создаёт или переиспользует датасет `hse-rag-bolgov-test`, запускает RAG и судью, сохраняет `artifacts/test_repeat.xlsx` и сверяет четыре средних с исходным `test_results.xlsx`.
 
