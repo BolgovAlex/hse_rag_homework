@@ -1,0 +1,16 @@
+{
+  "scope": "test",
+  "completed_rows_before_fix": 132,
+  "resume_from_row": 133,
+  "original_code_sha256": "9e9769fa8400a2bf2eefd35baf4c5abb9ca671587077f3a4d36888033620d028",
+  "resumed_code_sha256": "335d18d62b4eef50d9ea58e56cfba8ec5537f7a6baf5d3e7b55a689c0ad8eead",
+  "saved_prefix_sha256": "95133d0c765e80005844e0f2678375fbb470be78b4dc99c6b1b7706290eab638",
+  "dataset_sha256": "1866b760ff966547d1f2f8a6b08010e753e6cfe66f4a6dce33b797a6d6326766",
+  "index_file_sha256": "1b3884af1ec469e40bc71aa195c446c819d7dda9c302e34ada4bb721731a54e0",
+  "changed_sources": [
+    "rag/llm.py",
+    "rag/pipeline.py"
+  ],
+  "reason": "A final model response did not satisfy the answer protocol. Added an answer-only fallback on that path. Previously completed rows were preserved.",
+  "updated_at_utc": "2026-11-18T09:25:43.546568+00:00"
+}
