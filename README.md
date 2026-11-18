@@ -2,7 +2,7 @@
 
 Александр Болгов
 
-[Открыть эксперимент LangSmith](https://smith.langchain.com/public/94c16c9e-8fb2-4b67-9556-e43128aa1d5d/d) · [Скачать результаты Excel](test_results.xlsx)
+[Открыть эксперимент LangSmith](https://smith.langchain.com/public/94c16c9e-8fb2-4b67-9556-e43128aa1d5d/d) · [Скачать результаты Excel](test_results.xlsx) · [Excel повторного прогона](test_repeat_langsmith.xlsx)
 
 ## Результаты на 141 вопросе test
 
