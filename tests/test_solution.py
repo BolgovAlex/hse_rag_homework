@@ -15,7 +15,8 @@ from rag.budget import ApiBudget, call_official_judge
 from rag.common import ROOT
 from rag.index import PageIndex, organizations, parse_corpus, ocr_page
 from rag.pipeline import RAG, context_of, format_sources
-from rag.retrieval import block_layout, compact_text, excerpt, safe_prefix, tokens
+from rag.retrieval import block_layout, compact_text, excerpt, safe_prefix, table_excerpt, tokens
+from rag.scans import read_scan_table
 
 
 class NoNetwork(unittest.TestCase):
@@ -60,6 +61,24 @@ class ParsingTests(NoNetwork):
         self.assertIn("RUONIA", result)
         self.assertLessEqual(len(result), 350)
 
+    def test_table_excerpt_keeps_column_dates_after_wrapped_row(self):
+        source = (
+            "На 1 января | На 31 декабря\n"
+            "2024 г. | 2024 г.\n"
+            "млн руб. | млн руб.\n"
+            "Инвестиционные бумаги | 32 085 | 26 318\n"
+            "Финансовые инструменты,\n"
+            "оцениваемые по\n"
+            "справедливой стоимости\n"
+            "через прочий\n"
+            "совокупный доход | 37 501 | 22 756\n"
+            "Итого активы уровня 3 | 109 931 | 70 610\n"
+        )
+        shown = table_excerpt(source, "Каковы итого активы уровня 3 на конец 2024 года?", 410, {})
+        self.assertIn("На 1 января | На 31 декабря\n2024 г. | 2024 г.\nмлн руб. | млн руб.", shown)
+        self.assertIn("Итого активы уровня 3 | 109 931 | 70 610", shown)
+        self.assertLessEqual(len(shown), 410)
+
     def test_financial_inflections_share_retrieval_tokens(self):
         self.assertEqual(tokens("чистые комиссионные доходы"), tokens("чистых комиссионных доходов"))
 
@@ -74,6 +93,13 @@ class ParsingTests(NoNetwork):
             self.assertIn("Прошнуровано", text)
             self.assertEqual(len(pdf), 93)
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before)
+
+    @unittest.skipUnless((ROOT / "data/reports/gpb/2025/annual.pdf").exists()
+                         and (ROOT / "data/tessdata/rus.traineddata").exists(), "Real OCR fixture not downloaded")
+    def test_scan_table_recovers_two_cash_balance_columns(self):
+        with fitz.open(ROOT / "data/reports/gpb/2025/annual.pdf") as report:
+            text = read_scan_table(report[14], ROOT / "data/tessdata")
+        self.assertIn("344 064 | 1 063 355", text)
 
     def test_parsed_cache_reused_only_for_identical_pdf(self):
         with tempfile.TemporaryDirectory() as d:

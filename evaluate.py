@@ -73,11 +73,14 @@ def save_excel(results, path):
     temporary.replace(path)
 
 
-def evaluate(split="test", output=None, limit=None, system=None, judge=score_answer, resume=False, update_readme=True):
+def evaluate(split="test", output=None, limit=None, system=None, judge=score_answer, resume=False,
+             update_readme=True, train_cache=None):
     load_env()
     real_run = system is None and judge is score_answer
     if split == "test" and not real_run:
         raise ValueError("Итоговый test разрешён только с реальным RAG и исходным судьёй")
+    if train_cache is not None and (split != "train" or not real_run):
+        raise ValueError("Кэш сравнительного эксперимента доступен только для реального train")
     dataset = ROOT / f"data/{split}.jsonl"
     items = read_jsonl(dataset)
     if split == "test" and (limit is not None or len(items) != 141):
@@ -88,6 +91,16 @@ def evaluate(split="test", output=None, limit=None, system=None, judge=score_ans
         items = items[:limit]
     if len({item["question_id"] for item in items}) != len(items):
         raise ValueError("В датасете повторяются question_id")
+    cached = {}
+    if train_cache is not None:
+        prior = read_jsonl(train_cache)
+        cached = {row["question_id"]: row for row in prior}
+        expected = {item["question_id"]: item for item in items}
+        if len(cached) != len(prior) or not cached.keys() <= expected.keys():
+            raise ValueError("Кэш содержит лишние или повторные train-вопросы")
+        for key, row in cached.items():
+            if any(row.get(field) != expected[key][field] for field in ("question", "gold_answer", "gold_context")):
+                raise ValueError(f"Вопрос или разметка в кэше изменились: {key}")
     output = Path(output or ROOT / f"{split}_results.xlsx")
     checkpoint = output.with_suffix(".jsonl")
     pending_path = output.with_suffix(".pending.json")
@@ -102,6 +115,8 @@ def evaluate(split="test", output=None, limit=None, system=None, judge=score_ans
                 "model": getattr(system.llm, "model", "unknown"),
                 "top_k": system.top_k, "agentic": system.agentic,
                 "context_chars": getattr(system, "context_chars", None), "limit": limit, "split": split}
+    if train_cache is not None:
+        identity["train_cache_sha256"] = hashlib.sha256(train_cache.read_bytes()).hexdigest()
     run_path = output.with_suffix(".run.json")
     results = read_jsonl(checkpoint) if resume and checkpoint.exists() else []
     if results or (resume and pending_path.exists()):
@@ -122,6 +137,15 @@ def evaluate(split="test", output=None, limit=None, system=None, judge=score_ans
     write_json(run_path, identity)
     output.parent.mkdir(parents=True, exist_ok=True)
     for i, item in enumerate(items[len(results):], len(results) + 1):
+        if item["question_id"] in cached:
+            if pending_path.exists():
+                raise ValueError("Для готового ответа в кэше уже есть незавершённый запрос")
+            row = cached[item["question_id"]]
+            with checkpoint.open("a", encoding="utf-8") as target:
+                target.write(json.dumps(row, ensure_ascii=False) + "\n")
+            results.append(row)
+            print(f"{i}/{len(items)} {item['question_id']} взят из предыдущего прогона", flush=True)
+            continue
         if resume and pending_path.exists():
             pending = json.loads(pending_path.read_text(encoding="utf-8"))
             if pending["question_id"] != item["question_id"]:
@@ -163,6 +187,9 @@ def evaluate(split="test", output=None, limit=None, system=None, judge=score_ans
                 "packages": {name: importlib.metadata.version(name) for name in
                              ["PyMuPDF", "numpy", "scipy", "scikit-learn", "openpyxl", "requests"]},
                 "time_definition": "search + agent decisions + generation; excludes index load and judge"}
+    if train_cache is not None:
+        manifest["reused_train_rows"] = len(cached)
+        manifest["train_cache_sha256"] = identity["train_cache_sha256"]
     write_json(output.with_suffix(".summary.json"), manifest)
     # README получает числа только после полного реального test, без инъекции fake system/judge.
     if split == "test" and real_run and update_readme:
@@ -185,5 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int)
     parser.add_argument("--resume", action="store_true", help="Продолжить ту же серию без смены кода и настроек")
     parser.add_argument("--no-readme", action="store_true", help="Повторный прогон: не менять средние основной серии в README")
+    parser.add_argument("--train-cache", type=Path, help="Готовые неизменившиеся ответы сравнительного train")
     args = parser.parse_args()
-    print(evaluate(args.split, args.output, args.limit, resume=args.resume, update_readme=not args.no_readme))
+    print(evaluate(args.split, args.output, args.limit, resume=args.resume, update_readme=not args.no_readme,
+                   train_cache=args.train_cache))

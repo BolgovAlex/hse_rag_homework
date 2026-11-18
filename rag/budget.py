@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import requests
@@ -16,7 +17,7 @@ class ApiBudget:
     def __init__(self, directory=None, limit=None):
         load_env()
         key_id = hashlib.sha256(os.environ.get("LLM_API_KEY", "unset").encode()).hexdigest()[:12]
-        self.directory = directory or ROOT / ".private"
+        self.directory = directory or Path(os.getenv("RAG_BUDGET_DIR", ROOT / ".private"))
         self.limit = int(limit or os.getenv("RAG_DAILY_BUDGET", "1700000"))
         self.key_id = key_id
         self.lock = threading.RLock()

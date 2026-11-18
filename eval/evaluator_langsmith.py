@@ -76,7 +76,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset_name")
     parser.add_argument("--output", type=Path, help="Сохранить также Excel для сравнения с результатами сдачи")
+    parser.add_argument("--url-output", type=Path, help="Сохранить ссылку на завершённый эксперимент")
     args = parser.parse_args()
     results = evaluate(args.dataset_name, args.output)
-    print(getattr(results, "url", None) or results.experiment_name)
+    url = getattr(results, "url", None)
+    if args.url_output:
+        if not url:
+            raise RuntimeError("LangSmith не вернул ссылку на завершённый эксперимент")
+        args.url_output.write_text(url + "\n", encoding="utf-8")
+    print(url or results.experiment_name)
 

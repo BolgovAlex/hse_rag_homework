@@ -5,6 +5,9 @@ from collections import Counter
 
 _TOKEN = re.compile(r"[a-zа-я]\d+(?:[.,]\d+)?|[a-zа-я]{2,}|\d+(?:[.,]\d+)?")
 _SUFFIX = re.compile(r"(иями|ями|ами|ого|ему|ому|ыми|ими|иях|ах|ях|ов|ев|ий|ии|ый|ой|ая|яя|ое|ее|ые|ие|ую|юю|ых|их|ым|им|ом|ем|ам|ям|ия|ию|ью|ей|ся|а|я|ы|и|у|ю|е|о|ь)$")
+_TABLE_CELL = re.compile(r"\(?[+−-]?\d[\d ,.]*\)?%?|[–—-]")
+_PERIOD = re.compile(r"\b20\d{2}\b|\b\d{1,2}\s+(?:января|июня|декабря)\b|\d{1,2}\.\d{1,2}\.\d{2,4}")
+_UNIT = re.compile(r"\b(?:тыс|млн|млрд|трлн)\b|\b(?:руб|byn|rub|usd)\b", re.I)
 
 
 def stem(word):
@@ -130,4 +133,99 @@ def excerpt(text, query, limit=2200, idf=None):
                     for t in query_terms if t in counts)
         if score > best_score:
             best, best_score = window, score
+    return best
+
+
+def row_query(query, idf):
+    words = [word for word in tokens(query) if not word.startswith("#")]
+    weights = {word: float(idf.get(word, 1.0)) ** 1.5 for word in words}
+    total = sum(weights.values()) or 1.0
+    return {word: weight / total for word, weight in weights.items()}, set(zip(words, words[1:]))
+
+
+def row_match(label, weights, pairs):
+    words = tokens(label)
+    coverage = sum(weights.get(word, 0.0) for word in set(words))
+    adjacency = len(pairs.intersection(zip(words, words[1:])))
+    return coverage + min(adjacency * 0.06, 0.24)
+
+
+def rerank_by_rows(pages, query, idf):
+    weights, pairs = row_query(query, idf)
+    if not weights:
+        return pages
+
+    def rank(page):
+        previous = ""
+        best = 0.0
+        for line in page["text"].splitlines():
+            label, separator, values = line.partition("|")
+            if separator and sum(char.isdigit() for char in line) >= 4:
+                best = max(best, row_match(previous + " " + label, weights, pairs))
+            previous = label
+        return page["score"] + 0.5 * best
+
+    return sorted(pages, key=rank, reverse=True)
+
+
+def table_excerpt(text, query, limit, idf):
+    """Вернуть релевантные строки с исходными заголовками и единицами, если они помещаются."""
+    if limit < 240:
+        return ""
+    weights, pairs = row_query(query, idf)
+    if not weights:
+        return ""
+    lines = text.splitlines()
+    groups = []
+    for position, line in enumerate(lines):
+        cells = [cell.strip() for cell in line.strip("| ").split("|")]
+        values = [cell for cell in cells if _TABLE_CELL.fullmatch(cell)]
+        if len(cells) < 3 or len(values) < 2 or not any(any(c.isdigit() for c in v) for v in values):
+            continue
+        if all(not any(c.isdigit() for c in v) or re.fullmatch(r"20\d{2}", v) for v in values):
+            continue
+        if groups and position - groups[-1][-1] <= 6:
+            gap = lines[groups[-1][-1] + 1:position]
+            if not any(_PERIOD.search(part) and "|" in part for part in gap):
+                groups[-1].append(position)
+                continue
+        groups.append([position])
+
+    best = ""
+    best_score = 0.0
+    previous_end = -1
+    for group in groups:
+        start = group[0]
+        prelude = lines[max(previous_end + 1, start - 16):start]
+        previous_end = group[-1]
+        dates = [i for i, line in enumerate(prelude) if _PERIOD.search(line)]
+        units = [i for i, line in enumerate(prelude) if _UNIT.search(line)]
+        if len(group) < 2 or not dates or not units:
+            continue
+        header_start = max(0, min(dates[-1], units[-1]) - 3)
+        header_end = max(dates[-1], units[-1]) + 1
+        header = "\n".join(prelude[header_start:header_end]).strip()
+        rows = []
+        previous = start - len(prelude) + header_end - 1
+        for position in group:
+            lead = [line for line in lines[max(previous + 1, position - 5):position] if line and "|" not in line]
+            label = lines[position].lstrip("| ").split("|", 1)[0]
+            row = "\n".join([*lead, lines[position]])
+            score = row_match(" ".join([*lead, label]), weights, pairs)
+            if score >= 0.3 and len(header) + len(row) + 1 <= limit:
+                rows.append((score, position, row))
+            previous = position
+        if not rows:
+            continue
+        strength = max(value for value, _, _ in rows)
+        if strength <= best_score:
+            continue
+        selected = []
+        remaining = limit - len(header)
+        for _, position, row in sorted(rows, key=lambda item: (-item[0], item[1])):
+            if len(row) + 1 <= remaining:
+                selected.append((position, row))
+                remaining -= len(row) + 1
+        best = "\n".join([header, *(row for _, row in sorted(selected))])
+        best_score = strength
     return best

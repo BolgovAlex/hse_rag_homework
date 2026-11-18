@@ -14,7 +14,9 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.preprocessing import normalize
 
 from rag.common import ROOT, read_jsonl, traced, write_json
-from rag.retrieval import block_layout, compact_text, excerpt, report_hint, tokens
+from rag.ranker import POOL_SIZE, fit_ranker, rerank_with_model
+from rag.retrieval import block_layout, compact_text, excerpt, report_hint, rerank_by_rows, tokens
+from rag.scans import add_scan_evidence
 
 INDEX_VERSION = "hybrid-v2.1-blocks-bm25"
 
@@ -190,7 +192,7 @@ class PageIndex:
         return index
 
     @traced("hybrid_retrieval", "retriever")
-    def search(self, question, top_k=4, organization_hint=None):
+    def search(self, question, top_k=4, organization_hint=None, rerank=True):
         if not question.strip():
             raise ValueError("Пустой поисковый запрос")
         query = self.lexical.transform([question]).astype(np.float32)
@@ -207,7 +209,7 @@ class PageIndex:
         dense_score /= max(float(dense_score[eligible].max()), 1e-8)
         scores = 0.85 * word_score + 0.15 * dense_score
         primary_year, years, period = report_hint(question)
-        page_scores, best_piece = {}, {}
+        page_scores = {}
         for i, score in enumerate(scores):
             p = self.pieces[i]
             page = self.pages[p]
@@ -221,24 +223,38 @@ class PageIndex:
                 score += 0.05
             score += 0.08 * bool(period and period in page["doc_id"])
             if score > page_scores.get(p, -1):
-                page_scores[p], best_piece[p] = score, i
+                page_scores[p] = score
         ranked = sorted(page_scores, key=lambda p: (-page_scores[p], self.pages[p]["doc_id"], self.pages[p]["page"]))
+        rank_model = getattr(self, "rank_model", None)
+        pool_size = POOL_SIZE if rank_model is not None else 12
+        pool = []
+        if len(banks) > 1:
+            for bank in banks:
+                candidate = next((p for p in ranked if self.pages[p]["doc_id"].startswith(bank + "_")), None)
+                if candidate is not None:
+                    pool.append(candidate)
+        for p in ranked:
+            if len(pool) >= max(pool_size if rerank else 0, top_k, len(banks)):
+                break
+            if p not in pool:
+                pool.append(p)
+        candidates = [{**self.pages[p], "score": page_scores[p]} for p in pool]
+        if rerank and candidates:
+            if rank_model is None:
+                candidates = rerank_by_rows(candidates, question, self.term_idf)
+            else:
+                candidates = rerank_with_model(rank_model, candidates, question, self.term_idf)
         selected = []
         # Для сравнения нескольких организаций резервируем хотя бы по одному месту каждой.
         if len(banks) > 1:
             for bank in banks:
-                candidate = next((p for p in ranked if self.pages[p]["doc_id"].startswith(bank + "_")), None)
-                if candidate is not None and candidate not in selected:
-                    selected.append(candidate)
-        for p in ranked:
-            if len(selected) >= max(top_k, len(banks)):
-                break
-            if p not in selected:
-                selected.append(p)
-        return [{**self.pages[p], "score": page_scores[p],
-                 "excerpt": excerpt(self.pages[p]["text"], question, idf=self.term_idf),
+                best = next((p for p in candidates if p["doc_id"].startswith(bank + "_")), None)
+                if best is not None:
+                    selected.append(best)
+        selected.extend(p for p in candidates if p not in selected)
+        return [{**p, "excerpt": excerpt(p["text"], question, idf=self.term_idf),
                  "excerpt_idf": {t: self.term_idf.get(t, 1.0) for t in tokens(question)},
-                 "queries": [question]} for p in selected]
+                 "queries": [question]} for p in selected[:max(top_k, len(banks))]]
 
 
 def build(reports=None, output=None, tables=True):
@@ -261,13 +277,18 @@ def build(reports=None, output=None, tables=True):
                     column_pages += layout == "columns"
     print(f"Нативные блоки подготовлены: {column_pages} страниц с двумя колонками", flush=True)
     index = PageIndex(pages)
-    index.fingerprint = hashlib.sha256((fingerprint + INDEX_VERSION).encode()).hexdigest()
+    train = ROOT / "data/train.jsonl"
+    index.rank_model, candidates, positives = fit_ranker(index, read_jsonl(train))
+    scan_tables = add_scan_evidence(index, reports, documents, ROOT / "data/tessdata")
+    index.fingerprint = hashlib.sha256((fingerprint + INDEX_VERSION).encode() + train.read_bytes()).hexdigest()
     output.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(index, output, compress=3)
     write_json(output.with_suffix(".json"), {"documents": len(documents), "pages_indexed": len(pages),
                "chunks": len(index.pieces), "embedding": "char-TFIDF + SVD, 192 dimensions max",
                "corpus_sha256": fingerprint, "index_version": INDEX_VERSION,
-               "retrieval": "BM25 light Russian stems + local LSA", "column_pages": column_pages,
+               "retrieval": "BM25 + local LSA + logistic regression reranker",
+               "ranker_training_candidates": candidates, "ranker_training_positives": positives,
+               "column_pages": column_pages, "scan_tables": scan_tables,
                "diagnostics": diagnostics})
     print(f"Индекс готов: {len(pages)} страниц, {len(index.pieces)} фрагментов", flush=True)
 
